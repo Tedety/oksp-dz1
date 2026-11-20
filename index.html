@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Запись на приём</title>
+<style>
+body{font:16px system-ui;background:#f4f6fa;color:#17233a;margin:0}
+main{max-width:1080px;margin:auto;padding:32px 20px}
+nav,form,.pager{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:20px}
+button,select,input{font:inherit;padding:7px 11px;border:1px solid #9daac0;border-radius:5px;background:white}
+button{cursor:pointer}button[aria-pressed=true],button[type=submit]{background:#204b80;color:white}
+table{width:100%;border-collapse:collapse;background:white;margin:12px 0}
+td,th{text-align:left;border-bottom:1px solid #d6deeb;padding:9px}
+#message{min-height:1.5em;color:#963020}
+small{color:#485b76}dt{font-weight:600}dd{margin:0 0 10px}
+</style>
+<main>
+<small>Вариант 3 · stanislav_tedety</small>
+<h1>Запись на приём к специалисту</h1>
+<nav aria-label="Разделы">
+<button id="list">Записи</button><button id="booking">Свободные слоты</button><button id="summary">Сводка</button>
+</nav>
+<p id="message" role="status"></p>
+<section id="view"></section>
+</main>
+<script>
+const view = document.querySelector('#view');
+const message = document.querySelector('#message');
+const statusText = {booked:'Забронирована', cancelled:'Отменена'};
+let page = 1;
+let statusFilter = '';
+let selectedService = 1;
+const percent = n => (100*n).toLocaleString('ru-RU',{maximumFractionDigits:1}) + '%';
+
+function el(tag, value) {
+  const node = document.createElement(tag);
+  if (value !== undefined) node.textContent = value;
+  return node;
+}
+function button(label, action) {
+  const node = el('button', label);
+  node.type = 'button';
+  node.onclick = () => run(action);
+  return node;
+}
+async function run(action) {
+  message.textContent = '';
+  try { await action(); } catch (error) { message.textContent = error.message; }
+}
+async function api(path, body) {
+  const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
+  const response = await fetch('/api' + path, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error);
+  return data;
+}
+function screen(active, title) {
+  for (const id of ['list','booking','summary']) document.getElementById(id).setAttribute('aria-pressed', String(id===active));
+  view.replaceChildren(el('h2',title));
+}
+function table(headers, rows) {
+  const t = el('table');
+  const head = t.createTHead().insertRow();
+  headers.forEach(name => head.append(el('th',name)));
+  const body = t.createTBody();
+  for (const values of rows) {
+    const row = body.insertRow();
+    for (const value of values) {
+      const cell = row.insertCell();
+      if (value instanceof Node) cell.append(value);
+      else cell.textContent = value;
+    }
+  }
+  view.append(t);
+}
+async function showList() {
+  const data = await api('/appointments?' + new URLSearchParams({page, size: 12, status:statusFilter}));
+  screen('list','Список записей');
+  const select = el('select');
+  select.setAttribute('aria-label','Статус записи');
+  for (const [value,label] of Object.entries({'':'Все статусы', ...statusText})) {
+    const option = el('option',label); option.value=value; select.append(option);
+  }
+  select.value = statusFilter;
+  select.onchange = () => run(() => { statusFilter=select.value; page=1; return showList(); });
+  view.append(select);
+  table(['№','Специалист','Услуга','Начало','Статус'], data.items.map(a =>
+    [button(a.id, () => showDetail(a.id)),a.specialist,a.service,a.starts_at,statusText[a.status]]));
+  const controls = el('div'); controls.className='pager';
+  const prev = button('Назад', () => {page--; return showList();});
+  const next = button('Далее', () => {page++; return showList();});
+  prev.disabled=page<=1; next.disabled=page*data.size>=data.total;
+  controls.append(prev,el('span','Страница '+page+' · всего '+data.total),next); view.append(controls);
+}
+async function showDetail(id) {
+  const a = await api('/appointments/'+id);
+  screen('list','Карточка записи № '+id);
+  const details = el('dl');
+  for (const [key,value] of Object.entries({'Специалист':a.specialist,'Услуга':a.service,'Начало':a.starts_at,'Окончание':a.ends_at,'Статус':statusText[a.status]})) {
+    details.append(el('dt',key),el('dd',value));
+  }
+  view.append(details,button('К списку',showList));
+  if (a.status === 'booked') view.append(' ',button('Отменить запись', async () => {
+    await api('/appointments/'+id+'/cancel',{}); await showDetail(id);
+  }));
+}
+async function showBooking() {
+  const services = await api('/services');
+  const slots = await api('/slots?service_id='+selectedService);
+  screen('booking','Свободные слоты');
+  const select=el('select');
+  select.setAttribute('aria-label','Услуга');
+  for (const s of services) { const item=el('option',s.name+' · '+s.minutes+' мин'); item.value=s.id; select.append(item); }
+  select.value=selectedService;
+  select.onchange=()=>run(()=>{selectedService=Number(select.value);return showBooking();});
+  view.append(select);
+  table(['Специалист','Начало','Окончание','Действие'],slots.map(s=>[s.specialist,s.starts_at,s.ends_at,
+    button('Записаться',async()=>{const a=await api('/appointments',{slot_id:s.id,service_id:selectedService});await showDetail(a.id);})]));
+}
+let from='2026-11-18',to='2027-01-01';
+async function showSummary() {
+  const data=await api('/summary?'+new URLSearchParams({from,to}));
+  screen('summary','Загрузка специалистов');
+  const form=el('form');
+  const start=el('input'),end=el('input');
+  start.type=end.type='date';start.value=from;end.value=to;start.required=end.required=true;
+  const startLabel=el('label','С '),endLabel=el('label','До ');
+  startLabel.append(start);endLabel.append(end);
+  const submit=el('button','Показать');submit.type='submit';
+  form.append(startLabel,endLabel,submit);
+  form.onsubmit=e=>{e.preventDefault();from=start.value;to=end.value;run(showSummary);};
+  view.append(form,el('p','Броней: '+data.booked+' · отменено: '+data.cancelled+' · доля отмен: '+percent(data.cancelled_share)));
+  table(['Специалист','Слотов','Броней','Отменено','Загрузка'],
+    data.specialists.map(s=>[s.name,s.slots,s.booked,s.cancelled,percent(s.utilization)]));
+}
+document.getElementById('list').onclick=()=>run(showList);
+document.getElementById('booking').onclick=()=>run(showBooking);
+document.getElementById('summary').onclick=()=>run(showSummary);
+run(showList);
+</script>
+</html>
